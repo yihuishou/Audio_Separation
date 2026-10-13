@@ -1,0 +1,36 @@
+# audio-separation .gitignore
+# 保护内容: ~513 MB 测试音频, ~1.2 GB 模型权重, ~330 MB ffmpeg 二进制
+# 保留目录结构,忽略大型/生成内容
+
+# 模型权重(~1.2 GB)
+models/
+
+# ffmpeg 二进制(~330 MB) — 保留目录结构,忽略内容
+ffmpeg/bin/*
+
+# 测试音频素材(~513 MB)与切片
+test_audio/
+
+# 分离产物
+output/
+
+# 打包产物
+dist/
+build/
+*.spec
+
+# 虚拟环境与 Python 缓存
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# 测试缓存
+.pytest_cache/
+
+# IDE
+.idea/
+
+# OMO 会话文件
+ses_*.json
+.omo/

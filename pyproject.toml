@@ -1,0 +1,71 @@
+# audio-separation — 人声分离工具 (M0 骨架)
+# torch 刻意不出现于 dependencies 或 extras:
+# ROCm/CUDA 的 wheel 均位于 download.pytorch.org(非 PyPI),版本约束无法表达后端;
+# 更糟糕的是,在 AMD 机器上直接 pip install torch 会拉取 CUDA 构建并"成功"安装,
+# 比干净的"未安装"更难诊断。torch 被检测(FAIL 级)但从不由此项目安装。
+# 也没有 CPU-only wheel 的索引源:PLAN §2.14 是 GPU-only,给那条命令是把人引向死路。
+
+[project]
+name = "audio-separation"
+version = "0.1.0"
+description = "Cross-platform GUI tool for vocal/accompaniment separation using BS-RoFormer v2/v3"
+requires-python = ">=3.11"
+
+# 依赖组 A: 直接依赖(参考脚本实际 import)
+# 依赖组 B: BS-RoFormer 传递依赖(一条不能省)
+# 依赖组 C: GUI 层
+dependencies = [
+    # A
+    "numpy",
+    "PyYAML",
+    "scipy",
+    "BS-RoFormer>=1.2",
+    # B
+    "beartype",
+    "einops",
+    "einx",
+    "hyper-connections",
+    "pope-pytorch",
+    "rotary-embedding-torch",
+    "torch-einops-utils",
+    "librosa",
+    # C
+    "PySide6>=6.12",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+# 依赖组 E: 开发/测试
+dev = [
+    "pytest>=8",
+    "pytest-timeout>=2.3",
+    "pytest-cov>=5",
+]
+
+[project.scripts]
+audio-separation = "audio_separation.core.cli:main"
+audio-separation-ui = "audio_separation.ui.app:main"
+
+# Windows 上的无控制台窗口 GUI 入口
+[project.gui-scripts]
+audio-separation-gui = "audio_separation.ui.app:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# pytest 配置(PLAN §6.2)
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 慢测试默认不跑; -m slow / -m "slow and gpu" 显式开启
+addopts = "-m 'not slow' --strict-markers --timeout=1800 --timeout-method=thread"
+markers = [
+    "slow: 推理级测试(60 s 切片端到端), 分钟级",
+    "gpu: 需要可用加速后端; 无设备时自动 skip",
+    "packaging: 需要 dist/ 存在; 默认跳过",
+    "ui: PySide6 GUI 冒烟测试(需要显示服务器)",
+]
+filterwarnings = ["ignore::DeprecationWarning"]

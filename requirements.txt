@@ -1,0 +1,30 @@
+# audio-separation — 锁定依赖(Python 3.12.10, Windows 实测版本)
+#
+# ★ torch 不在此清单中。torch 必须按硬件手动安装(见 pyproject.toml 头部注释):
+#   ROCm: pip install torch --index-url https://download.pytorch.org/whl/rocm
+#   CUDA: pip install torch --index-url https://download.pytorch.org/whl/cu124
+# 没有 CPU 分支:本工具只做 GPU 推理(PLAN §2.14),装 CPU-only torch 是一条死路 ——
+# 它能过静态检测却过不了设备探测,用户只会拿到一个更晚更难懂的失败。
+# 以上为注释,无自动化 pip install -r 可从此文件安装 torch。
+#
+# 组 A — 直接依赖
+numpy==2.4.3
+PyYAML==6.0.3
+BS-RoFormer==1.2.4
+scipy==1.16.1
+# 组 B — BS-RoFormer 传递依赖
+beartype==0.22.9
+einops==0.8.1
+einx==0.4.3
+hyper-connections==0.4.11
+PoPE-pytorch==0.2.1
+rotary-embedding-torch==0.9.1
+torch-einops-utils==0.1.36
+librosa==1.0.0
+# 组 C — GUI
+PySide6==6.12.0
+tqdm==4.67.1
+# 组 E — 开发/测试
+pytest>=8
+pytest-timeout>=2.3
+pytest-cov>=5
