@@ -16,7 +16,16 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("音声分离 - BS-RoFormer Revive")
         self.resize(1200, 800)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        # 去掉标题栏上的 ? 帮助按钮。
+        #
+        # 这里必须写成 `& ~int(hint)` 而不是 `& ~hint`：Qt.WindowType 是 IntFlag,
+        # 而 IntFlag.__invert__ 只在**已定义成员的并集**内取反 —— PySide6 里
+        # ~Qt.WindowContextHelpButtonHint == 0x1feffff，这个掩码覆盖不到
+        # WindowCloseButtonHint(0x8000000) / WindowMinimizeButtonHint(0x20000),
+        # `&` 之后它们会被当作 0 清掉，表现为标题栏的关闭/最小化/最大化按钮消失。
+        # 先 int() 取出真实位掩码再取反，才是全域按位取反。
+        _flags = int(self.windowFlags()) & ~int(Qt.WindowType.WindowContextHelpButtonHint)
+        self.setWindowFlags(Qt.WindowType(_flags))
 
         self._setup_menu()
         self._setup_ui()
