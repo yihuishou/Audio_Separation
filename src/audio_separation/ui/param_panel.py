@@ -22,6 +22,9 @@ class ParamPanel(QWidget):
         super().__init__()
         self._setup_ui()
         self._load_models()
+        # 预设必须最后加载：它触发 _on_preset_changed()，而该回调要读
+        # model_select / dtype_select / output_dir_edit —— 这三个分属上面两步创建。
+        self._load_presets()
 
     def _setup_ui(self) -> None:
         """构建参数面板 UI。"""
@@ -42,7 +45,6 @@ class ParamPanel(QWidget):
         self.preset_select.currentIndexChanged.connect(self._on_preset_changed)
         self._preset_mod = preset_mod
         preset_row.addWidget(self.preset_select, 1)
-        self._load_presets()
         model_layout.addRow("预设", preset_row)
 
         # 模型信息（只读）
