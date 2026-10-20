@@ -105,7 +105,6 @@ def check_libs() -> list[dict]:
             continue
 
         name = entry["name"]
-        group = entry["group"]
         min_version = entry.get("min_version", "")
         level = entry.get("level", "INFO")
         install_hint = entry.get("install_hint", "")
@@ -118,7 +117,7 @@ def check_libs() -> list[dict]:
             # torch 特殊处理：额外从版本串识别后端，remedy 给按后端分支的命令字典
             if name == "torch":
                 backend = _detect_torch_backend(version)
-                item = f"torch（★只检测不安装，{group} 组）"
+                item = "torch（只检测不安装）"
                 if too_old:
                     results.append({
                         "item": item,
@@ -152,7 +151,7 @@ def check_libs() -> list[dict]:
             # torch 缺失时给出后端分支的安装提示（供 L3 面板按后端选择）
             if name == "torch" and install_hints:
                 results.append({
-                    "item": "torch（★只检测不安装，G 组）",
+                    "item": "torch（只检测不安装）",
                     "level": "FAIL",
                     "detail": "未安装",
                     "remedy": install_hints,  # dict，L3 面板按后端选取
