@@ -5,7 +5,10 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QFormLayout, QLabel,
     QComboBox, QLineEdit, QPushButton
@@ -82,6 +85,11 @@ class ParamPanel(QWidget):
         browse_btn.clicked.connect(self._browse_output)
         output_row.addWidget(browse_btn)
 
+        self.open_btn = QPushButton("打开目录(&O)")
+        self.open_btn.setToolTip("在系统文件管理器中打开输出目录")
+        self.open_btn.clicked.connect(self._open_output_dir)
+        output_row.addWidget(self.open_btn)
+
         output_layout.addLayout(output_row)
         layout.addWidget(output_group)
 
@@ -146,6 +154,42 @@ class ParamPanel(QWidget):
         )
         if path:
             self.output_dir_edit.setText(path)
+
+    def _open_output_dir(self) -> None:
+        """在系统文件管理器中打开输出目录。
+
+        目录可能还不存在（默认输出目录 `output/separated/` 只在首次分离时
+        才被建出来），所以先问用户要不要建，而不是直接失败。
+        """
+        from PySide6.QtWidgets import QMessageBox
+
+        raw = self.output_dir_edit.text().strip()
+        if not raw:
+            QMessageBox.warning(self, "提示", "尚未设置输出目录")
+            return
+
+        path = Path(raw)
+        if not path.is_dir():
+            reply = QMessageBox.question(
+                self,
+                "输出目录不存在",
+                f"目录不存在：\n{path}\n\n是否创建并打开？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                QMessageBox.critical(self, "创建失败", f"无法创建目录：\n{path}\n\n{exc}")
+                return
+
+        # ★返回 False 表示系统没有可用的文件管理器（如无桌面环境的服务器）
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            QMessageBox.warning(
+                self, "打开失败", f"无法打开目录：\n{path}\n\n请手动访问该路径。"
+            )
 
     def get_params(self) -> dict:
         """获取当前参数。"""

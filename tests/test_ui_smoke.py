@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+
 import pytest
 
 sys.path.insert(0, "src")
@@ -125,6 +127,150 @@ class TestMainWindowCreation:
         assert "dtype" in params
         assert "output_dir" in params
         panel.deleteLater()
+
+    def test_param_panel_has_open_dir_button(self, app):
+        """输出组里有「打开目录」按钮。"""
+        from audio_separation.ui.param_panel import ParamPanel
+        panel = ParamPanel()
+        assert panel.open_btn is not None
+        assert "打开" in panel.open_btn.text()
+        panel.deleteLater()
+
+
+class TestOpenOutputDir:
+    """「打开输出目录」的回归测试。
+
+    ★测试不真的调起系统文件管理器 —— 那是 GUI 进程外部行为，
+      断言它只会让测试在 CI 上弹出资源管理器窗口。这里把
+      `QDesktopServices.openUrl` 换掉，只验决策逻辑。
+    """
+
+    @pytest.fixture(autouse=True)
+    def app(self):
+        from PySide6.QtWidgets import QApplication
+        if QApplication.instance() is None:
+            app = QApplication([])
+            yield app
+            app.quit()
+        else:
+            yield QApplication.instance()
+
+    @pytest.fixture
+    def panel(self, app):
+        from audio_separation.ui.param_panel import ParamPanel
+        p = ParamPanel()
+        yield p
+        p.deleteLater()
+
+    def test_existing_dir_is_opened(self, panel, tmp_path, monkeypatch):
+        """目录已存在 → 直接打开，不弹询问框。"""
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtWidgets import QMessageBox
+
+        opened: list[str] = []
+        monkeypatch.setattr(
+            QDesktopServices, "openUrl",
+            staticmethod(lambda url: opened.append(url.toLocalFile()) or True),
+        )
+        def boom(*a, **k):
+            raise AssertionError("目录已存在时不该弹询问框")
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(boom))
+
+        target = tmp_path / "out"
+        target.mkdir()
+        panel.output_dir_edit.setText(str(target))
+        panel.open_btn.click()
+
+        # QUrl.toLocalFile() 在 Windows 上返回正斜杠路径，用 Path 比较
+        assert [Path(p) for p in opened] == [target]
+
+    def test_missing_dir_asks_before_creating(self, panel, tmp_path, monkeypatch):
+        """目录不存在 → 先问用户，答「否」就不建。"""
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtWidgets import QMessageBox
+
+        opened: list[str] = []
+        monkeypatch.setattr(
+            QDesktopServices, "openUrl",
+            staticmethod(lambda url: opened.append(url.toLocalFile()) or True),
+        )
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            staticmethod(lambda *a, **k: QMessageBox.StandardButton.No),
+        )
+
+        target = tmp_path / "nope"
+        panel.output_dir_edit.setText(str(target))
+        panel.open_btn.click()
+
+        assert not target.exists(), "答「否」就不该创建目录"
+        assert opened == [], "没创建就不该打开"
+
+    def test_missing_dir_creates_when_confirmed(self, panel, tmp_path, monkeypatch):
+        """目录不存在 → 答「是」就创建并打开。"""
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtWidgets import QMessageBox
+
+        opened: list[str] = []
+        monkeypatch.setattr(
+            QDesktopServices, "openUrl",
+            staticmethod(lambda url: opened.append(url.toLocalFile()) or True),
+        )
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
+        )
+
+        target = tmp_path / "made" / "deep"
+        panel.output_dir_edit.setText(str(target))
+        panel.open_btn.click()
+
+        assert target.is_dir(), "答「是」就该创建目录（含多级父目录）"
+        assert [Path(p) for p in opened] == [target]
+
+    def test_empty_dir_warns_without_opening(self, panel, monkeypatch):
+        """输出目录为空 → 警告，不打开。"""
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtWidgets import QMessageBox
+
+        opened: list[str] = []
+        monkeypatch.setattr(
+            QDesktopServices, "openUrl",
+            staticmethod(lambda url: opened.append(url.toLocalFile()) or True),
+        )
+        warned: list[str] = []
+        monkeypatch.setattr(
+            QMessageBox, "warning",
+            staticmethod(lambda *a, **k: warned.append(a[0]) or QMessageBox.StandardButton.Ok),
+        )
+
+        panel.output_dir_edit.setText("")
+        panel.open_btn.click()
+
+        assert opened == []
+        assert warned, "空目录应该弹警告"
+
+    def test_open_url_failure_is_reported(self, panel, tmp_path, monkeypatch):
+        """openUrl 返回 False（无桌面环境）→ 提示用户手动访问。"""
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtWidgets import QMessageBox
+
+        target = tmp_path / "out"
+        target.mkdir()
+        panel.output_dir_edit.setText(str(target))
+
+        monkeypatch.setattr(
+            QDesktopServices, "openUrl", staticmethod(lambda url: False)
+        )
+        warned: list[str] = []
+        monkeypatch.setattr(
+            QMessageBox, "warning",
+            staticmethod(lambda *a, **k: warned.append(a[0]) or QMessageBox.StandardButton.Ok),
+        )
+
+        panel.open_btn.click()
+
+        assert warned, "openUrl 失败必须提示，不能静默吞掉"
 
 
 class TestBatchPanelStartButton:
