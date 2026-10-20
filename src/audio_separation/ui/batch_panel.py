@@ -2,19 +2,23 @@
 """批量队列面板（右侧）：文件列表、传输控制、进度显示、日志。"""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+import os
+
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QProgressBar, QPlainTextEdit, QFileDialog,
     QMessageBox
 )
 
-from .. import paths
-from ..core import batch
-
 
 class BatchPanel(QWidget):
-    """批量队列面板。"""
+    """批量队列面板。
+
+    ★本面板只管「界面状态」，不碰推理：`_on_start` 只发 `start_requested`，
+      真正的调度由 `MainWindow` 接的 `BatchWorker`（ui/workers.py）负责。
+      面板自己不 import torch，GUI 进程始终不加载重依赖（§2.3）。
+    """
 
     # 信号：文件添加、开始处理、取消、完成
     files_added = Signal(list)
@@ -91,6 +95,8 @@ class BatchPanel(QWidget):
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
+        # ★只保留最近 500 行（PLAN §4 M4-6）：全曲 15 分钟会刷出上万行，
+        #   无上限的话 QPlainTextEdit 内存暴涨 → GUI 卡死。
         self.log.setMaximumBlockCount(500)
         log_group.addWidget(self.log, 1)
 
@@ -115,7 +121,6 @@ class BatchPanel(QWidget):
         )
         if directory:
             audio_ext = {".mp3", ".flac", ".wav", ".m4a", ".ogg", ".wma"}
-            import os
             files = []
             for root, _, filenames in os.walk(directory):
                 for filename in filenames:
@@ -130,9 +135,15 @@ class BatchPanel(QWidget):
         for item in items:
             row = self.file_list.row(item)
             self.file_list.takeItem(row)
+        self._refresh_file_label()
 
     def _on_start(self) -> None:
-        """开始处理。"""
+        """开始处理。
+
+        ★只发信号，不自己干活。参数（模型/精度/输出目录）由 `MainWindow`
+          从 `ParamPanel` 取真实值后补齐 —— 面板里不硬编码任何参数，
+          否则左边的参数面板就是个纯装饰。
+        """
         files = [self.file_list.item(i).text() for i in range(self.file_list.count())]
         if not files:
             QMessageBox.warning(self, "警告", "请先添加文件")
@@ -141,39 +152,76 @@ class BatchPanel(QWidget):
         self._processing = True
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
-        self.log.append("开始处理...")
+        self.progress.setValue(0)
+        self.append_log("开始处理...")
 
-        # 获取参数（从主窗口传入或默认）
-        params = {"model_key": "v2", "device": "auto", "dtype": "float32"}
-        self.start_requested.emit({"files": files, **params})
+        self.start_requested.emit({"files": files})
 
     def _on_cancel(self) -> None:
         """取消处理。"""
         self.cancel_requested.emit()
-        self.log.append("取消处理...")
+        self.append_log("取消处理...")
 
     def add_files(self, files: list[str]) -> None:
         """添加文件到列表。"""
         for file in files:
             item = QListWidgetItem(file)
             self.file_list.addItem(item)
+        self._refresh_file_label()
+        self.files_added.emit(list(files))
 
-    def update_progress(self, current: int, total: int, message: str = "") -> None:
-        """更新进度。"""
+    def _refresh_file_label(self) -> None:
+        """按列表当前条数刷新「N / M 文件」标签。"""
+        total = self.file_list.count()
+        self.file_label.setText(f"0 / {total} 文件")
+
+    def append_log(self, text: str) -> None:
+        """往日志框追加一行。
+
+        ★`QPlainTextEdit` 没有 `append()` 方法（那是 `QTextEdit` 的 API），
+          正确写法是 `appendPlainText()`。旧的 `self.log.append(...)` 会抛
+          `AttributeError: 'QPlainTextEdit' object has no attribute 'append'`。
+        """
+        self.log.appendPlainText(str(text))
+
+    def update_progress(
+        self, current: int, total: int, message: str = "", pct: int | None = None
+    ) -> None:
+        """更新进度。
+
+        Args:
+            current: 已完成的文件数。
+            total: 文件总数。
+            message: 附加到日志的一行说明（可空）。
+            pct: 整体百分比。给了就用它（分块级进度比文件级更细），
+                 不给则按文件数算。
+        """
         if total > 0:
-            pct = int(100 * current / total)
-            self.progress.setValue(pct)
             self.file_label.setText(f"{current} / {total} 文件")
+            if pct is None:
+                pct = int(100 * current / total)
+            self.progress.setValue(max(0, min(100, pct)))
         if message:
-            self.log.append(message)
+            self.append_log(message)
 
-    def finish_processing(self) -> None:
-        """处理完成。"""
+    def show_error(self, message: str) -> None:
+        """在日志里报一条错误，并把界面切回「可开始」状态。"""
+        self.append_log(f"[错误] {message}")
+        self.finish_processing(complete=False)
+
+    def finish_processing(self, complete: bool = True) -> None:
+        """处理结束。
+
+        Args:
+            complete: 是否正常完成。取消/出错时进度条不该跳到 100% ——
+                那会让「没做完」和「做完了」在界面上长得一模一样。
+        """
         self._processing = False
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
-        self.progress.setValue(100)
-        self.log.append("处理完成")
+        if complete:
+            self.progress.setValue(100)
+            self.append_log("处理完成")
         self.processing_complete.emit()
 
     @property

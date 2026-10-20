@@ -118,13 +118,23 @@ def run_batch(
     dtype: str = "float32",
     block_timeout_sec: int = 300,
     max_retries: int = 2,
+    job_dir: Path | None = None,
 ) -> Iterator[Event]:
     """运行批量分离，流式返回事件。
 
     带重试：worker 进程异常退出时重试最多 max_retries 次，指数退避。
+
+    Args:
+        job_dir: 作业目录。job.json 与取消哨兵 `.cancel` 都放在这里。
+            ★不传时 job.json 落在系统临时目录，调用方拿不到路径 ——
+            GUI 就没法写取消哨兵了。GUI 侧必须自己建目录并传进来。
     """
     job = create_job(inputs, model_key, device, dtype, block_timeout_sec)
-    job_path = write_job(job)
+    if job_dir is not None:
+        job_dir.mkdir(parents=True, exist_ok=True)
+        job_path = write_job(job, job_dir / "job.json")
+    else:
+        job_path = write_job(job)
 
     try:
         for attempt in range(max_retries + 1):
