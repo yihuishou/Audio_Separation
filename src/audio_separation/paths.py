@@ -24,7 +24,8 @@
 ① AUDIO_SEPARATION_ROOT 环境变量（显式覆盖）
 ② 从本文件向上最多 6 层
 ③ 从 cwd 向上最多 6 层
-④ 都没有 → best-effort（返回猜测路径，记录诊断）
+④ 从可执行文件向上最多 6 层（★冻结态必需：双击 exe 时 cwd 不在 exe 旁）
+⑤ 都没有 → best-effort（返回猜测路径，记录诊断）
 ```
 """
 from __future__ import annotations
@@ -111,6 +112,15 @@ def _discover() -> tuple[Path, str]:
     # ── ③ 从 cwd 向上 ─────────────────────────────────────────────────
     r, log = _probe(Path.cwd())
     parts.append(f"③ 从 cwd={Path.cwd()} 向上：\n" + "\n".join(log))
+    if r is not None and root is None:
+        root = r
+
+    # ── ④ 从可执行文件向上（冻结态必需）──────────────────────────────
+    # 双击 exe 时 cwd 不在 exe 旁（可能是 C:\Windows\System32），③ 必然落空。
+    # exe 所在目录才是资源该在的地方（PLAN R10）。
+    exe = self_executable()
+    r, log = _probe(exe)
+    parts.append(f"④ 从可执行文件 {exe} 向上：\n" + "\n".join(log))
     if r is not None and root is None:
         root = r
 

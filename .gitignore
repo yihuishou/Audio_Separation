@@ -18,6 +18,8 @@ output/
 dist/
 build/
 *.spec
+# ★ 例外：M7 的 PyInstaller spec 是**要提交**的源码（不是生成物）
+!packaging/*.spec
 
 # 虚拟环境与 Python 缓存
 .venv/

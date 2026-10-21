@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -155,6 +156,24 @@ def write_wav(path: Path | str, wav: np.ndarray, sample_rate: int) -> Path:
 # ══════════════════════════════════════════════════════════════════════════════
 # 辅助
 # ══════════════════════════════════════════════════════════════════════════════
+def _ensure_executable(exe: Path) -> Path:
+    """确保 ffmpeg 可执行。
+
+    ★ PyInstaller 的 `--add-binary` **不保留文件权限位**（官方 issue #3926），
+    打进 bundle 的 Linux ffmpeg 会丢掉 +x，表现为 "Permission denied"。
+    这里补一次 chmod —— Windows 无所谓权限位，直接跳过。
+    """
+    if platform.system() == "Windows":
+        return exe
+    try:
+        if not os.access(exe, os.X_OK):
+            exe.chmod(exe.stat().st_mode | 0o755)
+    except OSError:
+        # 只读文件系统 / 无权限：留给调用方报更具体的错
+        pass
+    return exe
+
+
 def _resolve_ffmpeg(ffmpeg: Path | str | None) -> Path:
     """定位 ffmpeg。显式传入优先，其次 `paths.find_ff()`（内置目录 → PATH → rglob）。"""
     if ffmpeg is not None:
@@ -164,7 +183,7 @@ def _resolve_ffmpeg(ffmpeg: Path | str | None) -> Path:
                 f"指定的 ffmpeg 不存在：{exe}\n"
                 f"★ 应放在 {paths.ffmpeg_bin()}（内嵌二进制，不依赖系统 PATH）"
             )
-        return exe
+        return _ensure_executable(exe)
     exe = paths.find_ff()
     if exe is None:
         raise AudioIOError(
@@ -173,7 +192,7 @@ def _resolve_ffmpeg(ffmpeg: Path | str | None) -> Path:
             f"★ 该文件是项目内嵌的必需资源（见 PLAN §2.13 F 组），"
             f"不是可选依赖，也不是检测项（R20）。"
         )
-    return exe
+    return _ensure_executable(exe)
 
 
 def rms(x: np.ndarray) -> float:

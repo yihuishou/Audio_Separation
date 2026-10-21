@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -19,18 +20,32 @@ from pathlib import Path
 from typing import Iterator
 
 from .. import paths
-from .protocol import Event, Job, JobInput
-
-WORKER_SCRIPT = None  # 延迟解析
+from .protocol import WORKER_FLAG, Event, Job, JobInput
 
 
-def _resolve_worker_script() -> Path:
-    """找到 worker.py 的路径。"""
-    global WORKER_SCRIPT
-    if WORKER_SCRIPT is not None:
-        return WORKER_SCRIPT
-    WORKER_SCRIPT = Path(__file__).parent.parent / "worker.py"
-    return WORKER_SCRIPT
+def _worker_command(job_path: Path) -> tuple[list[str], dict[str, str]]:
+    """构造启动 worker 子进程的命令行与环境变量。
+
+    ★ 冻结态与开发态的启动方式**不同**（PLAN §2.3 / M7）：
+
+    - 冻结态：`sys.executable` 就是 exe 自己，worker.py 是打包进 `_MEIPASS` 的
+      **源码文本**（不是可执行文件），只能让 exe 带 `--worker` 重新启动自己。
+    - 开发态：`python -m audio_separation.worker`。
+
+    两种模式靠 `sys.frozen` 区分（PyInstaller 会设置它）。
+    """
+    env = os.environ.copy()
+    if getattr(sys, "frozen", False):
+        return [str(paths.self_executable()), WORKER_FLAG, "--job", str(job_path)], env
+
+    cmd = [sys.executable, "-m", "audio_separation.worker", "--job", str(job_path)]
+    # 子进程要能 `import audio_separation`。editable install 时 site 的 .pth
+    # 就够了；但 `python tools/run_ui.py` 这种直接跑脚本的方式，src 只在
+    # **当前进程**的 sys.path 里，子进程看不到 —— 显式补上。
+    pkg_root = str(Path(__file__).resolve().parents[2])
+    old = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{pkg_root}{os.pathsep}{old}" if old else pkg_root
+    return cmd, env
 
 
 def create_job(
@@ -74,14 +89,15 @@ def cancel_job(job_dir: Path) -> None:
 
 def run_worker(job_path: Path) -> subprocess.Popen:
     """启动 worker 子进程，返回 Popen 对象。"""
-    worker_script = _resolve_worker_script()
+    cmd, env = _worker_command(job_path)
     proc = subprocess.Popen(
-        [sys.executable, str(worker_script), "--job", str(job_path)],
+        cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=env,
     )
     return proc
 

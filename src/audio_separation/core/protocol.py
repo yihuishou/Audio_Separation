@@ -47,6 +47,10 @@ from typing import Any, Literal
 
 JobAction = Literal["start", "cancel"]
 
+#: worker 模式的命令行开关。★冻结态下 exe 自己就是 worker（PLAN §2.3 / M7），
+#: GUI 入口（`ui/app.py`）与调度器（`core/batch.py`）必须用同一个字符串。
+WORKER_FLAG = "--worker"
+
 
 @dataclass
 class JobInput:
