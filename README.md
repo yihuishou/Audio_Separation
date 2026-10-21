@@ -89,3 +89,135 @@ pip install audio-separation
 # 需要预先安装 ROCm SDK(如 rocm-libs,hip-runtime-amd 等系统包)
 pip install torch --index-url https://download.pytorch.org/whl/rocm
 ```
+
+## 免安装分发(exe / Linux 可执行程序)
+
+除 pip 分发外,还能打包成**免安装**的可执行程序:解压即用,不需要 Python 环境。
+
+### 设计:只打包「程序」,重依赖交给目标系统
+
+产物体积 **约 120 MB**,而不是 1.1 GB。torch / numpy / scipy / librosa **不进包**,
+由目标系统自己装。这样做不只是为了省空间,更是为了正确性:
+
+- ROCm 的 `rocsolver.dll`(109MB)、`rocsparse.dll`(99MB)、`rocblas.dll`(41MB) 是
+  打包器顺着 torch 的二进制依赖链收进来的。目标系统的 ROCm 版本若与构建机不同,
+  这几个旧 DLL 会抢先加载 → 版本冲突崩溃。
+- torch 是按**它自己那份** numpy 编译的,包里换一份 numpy 会直接崩。
+
+所以运行时由 `packaging/rthook_syspath.py`(runtime hook)把目标系统的
+site-packages 加回 `sys.path`,追加在**末尾** —— 包内模块优先,系统的只在包内没有时生效。
+
+### 产物布局
+
+```
+dist/audio_separation/
+├── audio_separation.exe      ← Windows 上双击这个
+├── _internal/                ← 打包器内部目录(不要动)
+├── models/                   ← 手动复制(约 1.2 GB)
+└── ffmpeg/                   ← 手动复制(约 315 MB)
+```
+
+★ `models/` 和 `ffmpeg/` 放在 **exe 旁边**,不是 `_internal/` 里面。
+
+### 目标系统需要准备什么
+
+| 内容 | 原因 |
+|------|------|
+| ROCm 驱动(系统级) | 内核模块,无法随包分发。目标机器必须先装好对应发行版的 ROCm |
+| `pip install torch` | 用与该机器驱动匹配的 ROCm/CUDA wheel |
+| `pip install BS-RoFormer` | ★**必须**。见下方「为什么 BS-RoFormer 也不能打包」 |
+
+**只有两条命令**,其余全部由 pip 自动带出:
+
+```bash
+# Linux(ROCm)
+pip install torch --index-url https://download.pytorch.org/whl/rocm6.2
+pip install BS-RoFormer==1.2.4
+
+# Windows(ROCm 官方 Windows 预览版)
+pip install torch --index-url https://download.pytorch.org/whl/rocm6.2.windows
+pip install BS-RoFormer==1.2.4
+
+# NVIDIA 显卡则用 cuXXX 对应的 index-url
+```
+
+> ★★**顺序不能反**。`BS-RoFormer` 声明了 `torch>=2.0`,若目标机器上还没装 torch,
+> pip 会从 PyPI 拉**默认的 CUDA 构建** —— 在 AMD 机器上装出一个"装好了但用不了"的
+> torch(约 2.5 GB),比干脆没装更难排查。
+> 先用 `--index-url` 装好对应后端的 torch,pip 看到 `torch>=2.0` 已满足就不会再动它。
+
+`pip install BS-RoFormer==1.2.4` 会自动带出下面这些(实测 pip 解析结果):
+
+| 来源 | 包 |
+|------|-----|
+| BS-RoFormer 直接依赖 | `bs_roformer` `PoPE-pytorch` `beartype` `einops` `einx` `hyper-connections` `rotary-embedding-torch` `torch-einops-utils` |
+| librosa 链 | `librosa` `numba` `llvmlite` `numpy` `scipy` `scikit-learn` `soundfile` `soxr` `pooch` `joblib` `decorator` `lazy-loader` `msgpack` `threadpoolctl` |
+| einx 链 | `sympy` `mpmath` `frozendict` |
+| torch 链 | `filelock` `typing-extensions` `setuptools` `networkx` `jinja2` `MarkupSafe` `fsspec` |
+| 零碎 | `requests` `urllib3` `certifi` `idna` `charset-normalizer` `platformdirs` `cffi` `pycparser` `narwhals` `packaging` `cloudpickle` |
+
+实测占盘 **约 400 MB**(不含 torch 本身)。
+
+> `numpy` / `scipy` / `librosa` 也在这一链里,不用单独装;
+> `PyYAML` / `tqdm` 则已经打进 exe,目标系统不需要装。
+
+
+### 为什么 BS-RoFormer 也不能打包
+
+BS-RoFormer 及其依赖(`bs_roformer` / `PoPE_pytorch` / `einops` / `einx` /
+`beartype` / `hyper_connections` / `rotary_embedding_torch` / `torch_einops_utils`)
+**全部不进包**,由目标系统装。理由和 torch 不同,更硬:
+
+`PoPE_pytorch/triton_pope.py` 里有 `@triton.jit` 装饰的函数。triton 的
+`JITCallable.__init__`(`triton/runtime/jit.py:471`)会调
+`inspect.getsourcelines(fn)` 去读**源码**。而打包后纯 Python 模块在
+`.pyc` 归档里,读不到源码:
+
+```
+OSError: could not get source code
+→ ValueError: @jit functions should be defined in a Python file
+```
+
+`PoPE_pytorch/attention.py` 里的 `try/except` 只接 `ImportError`,
+接不住 `ValueError`,于是 `import bs_roformer` 整个失败 —— 表现为
+**冻结态一启动就崩,与 CUDA 无关**。
+
+只有从**磁盘**加载(目标系统 pip 装的 `.py` 文件)才有源码给 triton 读。
+顺带好处:bs_roformer 与目标系统的 torch 版本天然对齐,不会错配。
+
+> ★ 命名陷阱:PyPI 上包名是 `pope-pytorch`(小写),但 **import 名是大写的
+> `PoPE_pytorch`**。写 hidden import 时用小写会报
+> `Hidden import 'pope_pytorch' not found`。
+
+### 构建
+
+```bash
+# Windows
+powershell -ExecutionPolicy Bypass -File tools\build_windows.ps1
+
+# Linux(★ PyInstaller 不能跨平台编译,必须在 Linux 上构建)
+bash tools/build_linux.sh
+```
+
+构建完按提示手动复制 `models/` 和 `ffmpeg/` 到 exe 旁边,即可分发。
+
+### 四种运行模式
+
+同一个 exe 有四种启动方式:
+
+| 命令 | 行为 |
+|------|------|
+| `audio_separation` | 弹 GUI 窗口 |
+| `audio_separation --version` | 打印版本号后退出(退出码 0) |
+| `audio_separation --worker --job job.json` | worker 模式,stdout 吐 JSON Lines |
+| `audio_separation --probe` | 探测 GPU(不弹窗口),结果写入 `PROBE_RESULT_FILE` 指定的文件 |
+
+★ GUI 模式会带一个控制台窗口 —— 这是必需的:worker 模式靠 stdout 传协议,
+用无控制台的 GUI 程序会导致 GUI 收不到任何事件。
+
+### Linux 注意事项
+
+- `models/` `ffmpeg/` 的可执行权限位可能丢失(PyInstaller 官方 issue #3926
+  承认不保留文件属性),运行时会自动 `chmod` 兜底,也可手动 `chmod +x`。
+- `ffmpeg/` 必须是 **Linux 版**二进制(文件名无 `.exe` 后缀),Windows 版跑不了。
+- glibc 版本要求 2.28–2.39,更老的系统跑不了 ROCm torch。
