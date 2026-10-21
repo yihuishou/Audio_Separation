@@ -51,6 +51,11 @@ JobAction = Literal["start", "cancel"]
 #: GUI 入口（`ui/app.py`）与调度器（`core/batch.py`）必须用同一个字符串。
 WORKER_FLAG = "--worker"
 
+#: 设备探测模式的命令行开关。★冻结态下 exe 自己就是探测子进程 ——
+#: 冻结产物没有 `python -c` 这种跑法，exe 会把 `-c` 当成不认识的参数，
+#: 于是走进 GUI 分支再也不返回，表现为「探测超时（>90s）」。
+PROBE_FLAG = "--probe"
+
 
 @dataclass
 class JobInput:

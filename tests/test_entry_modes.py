@@ -24,8 +24,8 @@ import pytest
 sys.path.insert(0, "src")
 
 from audio_separation import paths as audio_paths
-from audio_separation.core import audio_io, batch
-from audio_separation.core.protocol import WORKER_FLAG
+from audio_separation.core import audio_io, batch, env_check
+from audio_separation.core.protocol import PROBE_FLAG, WORKER_FLAG
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -229,3 +229,86 @@ class TestGitignoreKeepsSpec:
         if proc.returncode == 128:
             pytest.skip("不在 git 仓库里")
         assert proc.returncode != 0, "packaging/*.spec 被 .gitignore 忽略了，spec 提交不上去"
+
+
+class TestProbeEntryMode:
+    """``ui/app.py`` 的 ``--probe`` 分派（冻结态设备探测）。"""
+
+    def test_probe_flag_is_dispatched_to_probe_main(self, monkeypatch):
+        """``--probe`` 必须转交给 device_probe 的 main。"""
+        from audio_separation.ui import app
+
+        captured: list[bool] = []
+
+        def fake_main():
+            captured.append(True)
+            return 0
+
+        fake = types.ModuleType("audio_separation.core.device_probe")
+        setattr(fake, "main", fake_main)
+        monkeypatch.setitem(sys.modules, "audio_separation.core.device_probe", fake)
+
+        assert app.main([PROBE_FLAG]) == 0
+        assert captured == [True]
+
+    def test_probe_mode_does_not_create_qapplication(self, monkeypatch):
+        """★ 探测模式绝不能创建 QApplication（GUI 进程禁止 import torch）。"""
+        from audio_separation.ui import app
+
+        def boom(*_args, **_kwargs):
+            raise AssertionError("探测分支不该创建 QApplication")
+
+        monkeypatch.setattr("PySide6.QtWidgets.QApplication", boom)
+
+        fake = types.ModuleType("audio_separation.core.device_probe")
+        setattr(fake, "main", lambda: 0)
+        monkeypatch.setitem(sys.modules, "audio_separation.core.device_probe", fake)
+
+        assert app.main([PROBE_FLAG]) == 0
+
+
+class TestProbeCommand:
+    """``core/env_check.py`` 启动探测子进程的命令。"""
+
+    @staticmethod
+    def _capture_cmd(monkeypatch) -> list[str]:
+        seen: dict[str, Any] = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                seen["cmd"] = cmd
+
+            def communicate(self, timeout=None):
+                raise RuntimeError("测试到此为止")
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(env_check.subprocess, "Popen", _FakePopen)
+        env_check.probe_device(force=True)
+        return list(seen["cmd"])
+
+    def test_frozen_uses_executable_with_probe_flag(self, monkeypatch):
+        """★ 冻结态：没有 `python -c` 这种跑法，只能让 exe 自己认 --probe 重启。"""
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+        cmd = self._capture_cmd(monkeypatch)
+
+        assert cmd == [sys.executable, PROBE_FLAG]
+
+    def test_dev_runs_probe_script_file(self, monkeypatch):
+        """开发态直接跑脚本文件（不用 -m：-m 会把 cwd 塞进 sys.path[0]）。"""
+        monkeypatch.delattr(sys, "frozen", raising=False)
+
+        cmd = self._capture_cmd(monkeypatch)
+
+        assert cmd[0] == sys.executable
+        assert cmd[1].endswith("device_probe.py"), f"探测脚本路径不对：{cmd[1]}"
+
+    def test_probe_script_is_self_contained(self):
+        """★ device_probe 不能 import 项目内模块 —— 它要以独立脚本方式运行。"""
+        src = (REPO_ROOT / "src" / "audio_separation" / "core" / "device_probe.py").read_text(
+            encoding="utf-8"
+        )
+        assert "import audio_separation" not in src, "探测脚本必须自包含"
+        assert "from ." not in src, "探测脚本不能用相对 import"

@@ -193,10 +193,12 @@ class TestNoCpuFallbackInSource:
         assert not offenders, f"{name} 仍有返回 CPU 的分支：{offenders}"
 
     def test_probe_script_has_no_cpu_backend(self):
-        """探测子进程的脚本源码（一个字符串常量）里，backend 只能被赋成 rocm / cuda。"""
-        from audio_separation.core.env_check import _build_probe_script
+        """探测子进程的源码里，backend 只能被赋成 rocm / cuda。
 
-        tree = ast.parse(_build_probe_script())
+        ★探测脚本现在是独立模块 `core/device_probe.py`（原先是 env_check.py 里的
+        一段字符串常量）—— 冻结态没有 `python -c` 那种跑法，字符串脚本没法用。
+        """
+        tree = _tree("device_probe.py")
         assigned = {
             node.value.value
             for node in ast.walk(tree)
@@ -218,12 +220,21 @@ class TestNoCpuFallbackInSource:
     def test_probe_script_skips_inference_without_gpu(self):
         """没有 GPU 时探测脚本必须止步于 error，不能继续走到 bs_roformer 假推理。
 
-        判据是结构性的：GPU 分支里的 `model.eval().to("cuda")` 必须嵌套在
-        `if torch.cuda.is_available():`（或其 else 分支）之下。
-        """
-        from audio_separation.core.env_check import _build_probe_script
+        判据是结构性的，两条都要满足：
+        1. `torch.cuda.is_available()` 的假分支里**必须直接 return**（early return，
+           杜绝 fall through）；
+        2. 所有 `model.eval().to("cuda")` 都必须出现在该检查**之后**。
 
-        tree = ast.parse(_build_probe_script())
+        ★原先的判据是「cuda 调用必须是 guard 的后代」（依赖 if/else 嵌套写法）。
+        脚本改成 early return 后嵌套关系消失，但语义更严格 —— 所以判据跟着改成
+        「分支里必须 return」+「位置必须在检查之后」，并没有放松。
+        """
+        tree = _tree("device_probe.py")
+        probe_fn = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_probe"
+        )
 
         def _is_is_available(node: ast.AST) -> bool:
             """识别 `torch.cuda.is_available()`，容许外层裹一层 `not`。"""
@@ -236,13 +247,25 @@ class TestNoCpuFallbackInSource:
             )
 
         guards = [
-            node for node in ast.walk(tree)
+            node
+            for node in ast.walk(probe_fn)
             if isinstance(node, ast.If) and _is_is_available(node.test)
         ]
         assert guards, "探测脚本不再检查 torch.cuda.is_available()，GPU 缺失会一路走下去"
 
+        guard = guards[0]
+        assert any(isinstance(n, ast.Return) for n in ast.walk(guard)), (
+            "没有 GPU 的分支必须直接 return，不能 fall through 到假推理"
+        )
+
+        guard_end = max(
+            (getattr(n, "end_lineno", 0) or 0 for n in ast.walk(guard)),
+            default=guard.lineno,
+        )
+
         cuda_moves = [
-            node for node in ast.walk(tree)
+            node
+            for node in ast.walk(probe_fn)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "to"
@@ -250,22 +273,10 @@ class TestNoCpuFallbackInSource:
         ]
         assert cuda_moves, "探测脚本的假推理没有搬到 GPU 上，那这一步等于没测"
 
-        # 守卫是 cuda 调用的**祖先**，所以要向上走而不是向下走
-        parent: dict[ast.AST, ast.AST] = {}
-        for node in ast.walk(tree):
-            for child in ast.iter_child_nodes(node):
-                parent[child] = node
-
-        def _ancestors(node: ast.AST) -> list[ast.AST]:
-            chain: list[ast.AST] = []
-            while (owner := parent.get(node)) is not None:
-                chain.append(owner)
-                node = owner
-            return chain
-
-        assert any(guard in _ancestors(cuda_node) for cuda_node in cuda_moves for guard in guards), (
-            "GPU 假推理没有受 is_available() 保护 —— 没有 GPU 时它也会被执行"
-        )
+        for move in cuda_moves:
+            assert move.lineno > guard_end, (
+                f"假推理出现在 GPU 检查之前（第 {move.lineno} 行）"
+            )
 
     @pytest.mark.parametrize(
         "name",

@@ -154,12 +154,38 @@ def run(job_path: str) -> int:
     return 0
 
 
+def _finalize(code: int) -> None:
+    """进程收尾。
+
+    ★ 冻结态（PyInstaller 打包后）必须强制退出：torch/ROCm 会起一批后台线程
+    （HIP 线程池、显存回收等），这些线程会让 CPython 的 `Py_Finalize` 卡死 ——
+    实测 worker 打印完最后一条事件后能挂住 240 秒以上不退出。
+
+    而 `core/batch.py` 的调度器是靠等 worker 进程结束来收尾的
+    （`subprocess.Popen` + 读 stdout 到 EOF），worker 不退 = GUI 永远等不到结果，
+    表现为「处理完了但进度条一直转」。
+
+    开发态不需要：解释器退出时这些线程会被 OS 直接回收。
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    # 管道里的 stdout 是块缓冲，必须刷干净再强退，否则最后几条事件会丢
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:  # pragma: no cover - 关掉 stdout 时可能抛
+            pass
+    os._exit(code)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Audio separation worker process (JSON Lines protocol)")
     parser.add_argument("--job", required=True, help="path to job.json")
     args = parser.parse_args(argv)
-    return run(args.job)
+    code = run(args.job)
+    _finalize(code)
+    return code
 
 
 if __name__ == "__main__":

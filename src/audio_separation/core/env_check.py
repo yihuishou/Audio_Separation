@@ -22,8 +22,10 @@ import subprocess
 import sys
 import tempfile
 from functools import lru_cache
+from pathlib import Path
 
 from . import requirements as req
+from .protocol import PROBE_FLAG
 
 
 # ---------------------------------------------------------------------------
@@ -185,28 +187,13 @@ def _detect_torch_backend(version: str) -> str:
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
-def probe_device(timeout: int = 90, force: bool = False) -> dict:
-    """在子进程中探测设备并返回结果。
+def _probe_device_cached(timeout: int) -> dict:
+    """探测实现。缓存由外层 `probe_device()` 控制。
 
-    返回：{ok, backend, device_name, torch_version, flash_attn, error}
-    - ok: 是否探测成功。**False 意味着终止**（§2.14 GPU-only，没有 CPU 兜底）
-    - backend: rocm / cuda（**不再有 cpu** —— 见 §2.14）
-    - device_name: 设备名称（如 "AMD Radeon RX 7900 XTX"）
-    - torch_version: torch 版本串
-    - flash_attn: 是否建议启用 flash attention
-    - error: 失败原因（ok=False 时必有）
-
-    ★缓存结果，force=True 时重新探测（供设备切换按钮使用）。
-    ★通信方式：子进程将 JSON 结果写入临时文件，避免 stdout 被 torch 污染。
-    ★超时按失败处理 —— GPU 状态未知时不允许"先跑起来再说"。
+    ★不要把 `force` 参数和 `cache_clear()` 放进这个被 lru_cache 装饰的函数里 ——
+    lru_cache 命中缓存时**根本不执行函数体**，写在里面的 cache_clear() 永远
+    跑不到，force=True 会静默地返回上一次的旧结果。
     """
-    if force:
-        probe_device.cache_clear()
-
-    # 使用 subprocess 运行探测脚本，避免在本进程 import torch/bs_roformer
-    # 导致挂死或影响主进程状态
-    script = _build_probe_script()
-
     try:
         # ★子进程环境准备：
         # 1. NUMBA_CACHE_DIR — 避免 librosa 的 numba 装饰器写 site-packages
@@ -221,8 +208,20 @@ def probe_device(timeout: int = 90, force: bool = False) -> dict:
         result_file.close()
         env["PROBE_RESULT_FILE"] = result_file.name
 
+        # ★探测子进程怎么起，取决于当前是解释器还是冻结产物。
+        # 冻结态没有 `python -c` 这种跑法 —— exe 会把 `-c` 当成不认识的参数，
+        # 于是走进 GUI 分支再也不返回，表现为「探测超时（>90s）」。
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, PROBE_FLAG]
+        else:
+            # 开发态直接跑脚本文件。用文件路径而不是 `-m`：`-m` 会把 cwd
+            # 放进 sys.path[0]，从别的目录调用就找不到包。
+            from . import device_probe
+
+            cmd = [sys.executable, str(Path(device_probe.__file__).resolve())]
+
         proc = subprocess.Popen(
-            [sys.executable, "-c", script],
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
@@ -278,141 +277,29 @@ def probe_device(timeout: int = 90, force: bool = False) -> dict:
         }
 
 
-def _build_probe_script() -> str:
-    """构建子进程要运行的探测脚本。
+def probe_device(timeout: int = 90, force: bool = False) -> dict:
+    """在子进程中探测设备并返回结果。
 
-    ★子进程入口必须应用 PLAN §2.8 四条规避，顺序敏感：
-    1. 设置 NUMBA_CACHE_DIR 到临时目录
-    2. stdout/stderr reconfigure 为 UTF-8（避免 Windows GBK 打印 ⇒ 崩）
-    3. 再 import torch/librosa/bs_roformer（顺序颠倒则 1、2 失效）
-    4. ffmpeg 的 stderr 单独管道（本探测不涉及 ffmpeg，由调用者处理）
+    返回：{ok, backend, device_name, torch_version, flash_attn, error}
+    - ok: 是否探测成功。**False 意味着终止**（§2.14 GPU-only，没有 CPU 兜底）
+    - backend: rocm / cuda（**不再有 cpu** —— 见 §2.14）
+    - device_name: 设备名称（如 "AMD Radeon RX 7900 XTX"）
+    - torch_version: torch 版本串
+    - flash_attn: 是否建议启用 flash attention
+    - error: 失败原因（ok=False 时必有）
 
-    通信方式：将 JSON 结果写入 PROBE_RESULT_FILE 环境变量指定的临时文件，
-    避免 torch 的 stdout 输出污染 JSON 解析。
+    ★缓存结果，force=True 时重新探测（供设备切换按钮使用）。
+    ★通信方式：子进程将 JSON 结果写入临时文件，避免 stdout 被 torch 污染。
+    ★超时按失败处理 —— GPU 状态未知时不允许"先跑起来再说"。
+
+    ★ `force` 的清缓存必须发生在这个**未被 lru_cache 装饰**的包装器里：
+    lru_cache 命中缓存时不执行被装饰函数的函数体，把 cache_clear() 写进去
+    等于永远不生效，force=True 会静默返回上一次的旧结果。
     """
-    return '''
-import sys
-import json
-import os
-import tempfile
-import warnings
+    if force:
+        _probe_device_cached.cache_clear()
+    return _probe_device_cached(timeout)
 
-# ★规避 1：设置 NUMBA_CACHE_DIR 到可写临时目录
-# 不这样做，librosa 的 numba 装饰器会尝试写 site-packages/__pycache__，
-# 目录不可写时 tempfile.TemporaryFile(dir=path) 静默死循环（不是异常）
-os.environ["NUMBA_CACHE_DIR"] = tempfile.mkdtemp(prefix="numba_cache_")
-
-# ★规避 2：stdout/stderr 重配为 UTF-8
-# Windows 默认 GBK，打印 ⇒(U+21D2) 直接崩
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-# 抑制所有警告（避免污染输出）
-warnings.filterwarnings("ignore")
-
-result = {
-    "ok": False,
-    "backend": "unknown",
-    "device_name": "",
-    "torch_version": "",
-    "flash_attn": False,
-    "error": ""
-}
-
-try:
-    # ★规避 3：再 import 重模块
-    import torch
-    result["torch_version"] = torch.__version__
-
-    # 步骤 1：torch 导入成功
-
-    # 步骤 2：GPU 可用性
-    # ★PLAN §2.14 GPU-only 硬约束：探测不到 GPU 就是终止条件，没有 CPU 兜底。
-    # 先按版本串定后端 —— ROCm build 的 torch.cuda.is_available() 同样返回 True，
-    # 所以后端只能从 "+rocm" 本地标签判断，不能靠 is_available 的结果反推。
-    if "rocm" in torch.__version__:
-        result["backend"] = "rocm"
-        result["flash_attn"] = False  # ROCm 不启用 flash_attn
-    else:
-        result["backend"] = "cuda"
-        result["flash_attn"] = True  # CUDA 默认尝试启用
-
-    if not torch.cuda.is_available():
-        # 区分"装错了后端"和"机器上根本没有 GPU" —— 两者的排查方向完全不同
-        build = "ROCm" if result["backend"] == "rocm" else "CUDA"
-        reason = (
-            "torch 报告没有可用的 GPU（当前 torch 是 {ver}，{build} 构建）。"
-            "本工具不提供 CPU 模式，GPU 不可用时立即终止。"
-        ).format(ver=result["torch_version"], build=build)
-        if build == "ROCm":
-            reason += (
-                " 请检查显卡驱动与 ROCm 支持列表："
-                "https://rocm.docs.amd.com/projects/install-on-windows/en/latest/reference/system-requirements.html"
-            )
-        else:
-            reason += " 请确认这台机器确实有受支持的独立显卡，以及驱动版本与 torch 构建匹配。"
-        result["error"] = reason
-    else:
-        result["device_name"] = torch.cuda.get_device_name(0)
-
-        # 步骤 3：import bs_roformer
-        from bs_roformer import BSRoformer
-
-        # 步骤 4：一次极小的假推理，捕捉 kernel 层错误（L1 查不到的）
-        # ★必须搬到 GPU 上跑：这一步的全部价值就是验证"GPU 那条路能不能走通"，
-        # 留在 CPU 上跑等于什么都没测（ROCm 的 kernel 签名/显存问题一个都抓不到）。
-        # 用默认 STFT 设置（n_fft=2048 → 1025 频点），与 DEFAULT_FREQS_PER_BANDS 匹配。
-        try:
-            model = BSRoformer(
-                dim=128,
-                depth=1,
-                stereo=True,
-                num_stems=1,
-                time_transformer_depth=1,
-                freq_transformer_depth=1,
-                flash_attn=result["flash_attn"],
-            )
-            model.eval().to("cuda")
-            x = torch.randn(1, 2, 4096, device="cuda")
-            with torch.no_grad():
-                y = model(x)
-            # ★真搬一次：探测"显存够不够"这件事在 BSRoformer 之后才问才准
-            y = y.float().cpu()
-            result["ok"] = True
-        except Exception as e:
-            # 推理失败：可能是 flash_attn 问题，降级后重试
-            if result["flash_attn"]:
-                result["flash_attn"] = False
-                try:
-                    model = BSRoformer(
-                        dim=128,
-                        depth=1,
-                        stereo=True,
-                        num_stems=1,
-                        time_transformer_depth=1,
-                        freq_transformer_depth=1,
-                        flash_attn=False,
-                    )
-                    model.eval().to("cuda")
-                    x = torch.randn(1, 2, 4096, device="cuda")
-                    with torch.no_grad():
-                        y = model(x)
-                    y = y.float().cpu()
-                    result["ok"] = True
-                except Exception as e2:
-                    result["error"] = f"GPU 推理失败（flash_attn=False）：{str(e2)[:200]}"
-            else:
-                result["error"] = f"GPU 推理失败：{str(e)[:200]}"
-
-except Exception as e:
-    result["error"] = str(e)[:500]
-
-# ★通信：将结果写入临时文件（避免 stdout 被 torch 污染）
-result_file = os.environ.get("PROBE_RESULT_FILE", "")
-if result_file:
-    with open(result_file, "w", encoding="utf-8") as f:
-        json.dump(result, f)
-'''
 
 
 # ---------------------------------------------------------------------------
