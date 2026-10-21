@@ -234,16 +234,38 @@ GPU_DLL_NAMES = (
     "nvcuda", "nvrtc", "nvjitlink", "nvtx", "cudart", "cudart64", "cublas",
     "cublasLt", "cusparse", "cusolver", "curand", "cufft", "cudnn", "cudnn_engines",
     "cudnn_engines_precompiled", "cudnn_graph", "cudnn_heuristic", "cudnn_ops",
-    "cudnn_adv", "nccl", "cupy", "c10_cuda", "torch_cuda", "cudnn_frontend",
+    "cudnn_adv", "nccl", "cupy", "c10_cuda", "torch_cuda", "torch_hip",
+    "cudnn_frontend",
 )
 
 
 def _is_gpu_dll(name: str) -> bool:
+    """判断一个二进制文件是不是 GPU 运行库。
+
+    ★ Linux 的命名规则和 Windows 完全不同，必须分开处理：
+      Windows: rocsolver.dll
+      Linux  : librocsolver.so.7.1.0   ← lib 前缀 + 带版本号的 .so
+    只按 startswith 匹配前缀的话，Linux 上一个都命中不了，
+    300MB ROCm 运行库会原样进包，目标系统加载到与本地驱动不匹配的旧版本。
+    """
     stem = os.path.basename(name).lower()
+
+    # 去掉版本号后缀：.so.7.1.0 → .so
+    for sep in (".so.", ".dylib."):
+        idx = stem.find(sep)
+        if idx != -1:
+            stem = stem[:idx]
+            break
+
     for suffix in (".dll", ".so", ".dylib", ".pyd"):
         if stem.endswith(suffix):
             stem = stem[: -len(suffix)]
             break
+
+    # Linux 的共享库带 lib 前缀，去掉才能和上面的前缀表对上
+    if stem.startswith("lib"):
+        stem = stem[3:]
+
     return any(stem.startswith(prefix) for prefix in GPU_DLL_NAMES)
 
 
