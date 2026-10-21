@@ -25,14 +25,15 @@
 
 ## ★Linux / macOS 上这个模块是空操作
 
-PyInstaller 官方文档对 `--windowed` 的原文：
+Linux 与 macOS 都没有「控制台窗口」这回事 —— 从文件管理器双击
+不会像 Windows 那样弹黑框，所以这里直接 `return False`。
 
-    This option is ignored on *NIX systems.
-
-所以 Linux 产物本来就是普通控制台程序，stdout 照常工作
-（worker 协议天然可用，不依赖 Windows 那套管道技巧），
-而且 Linux 本来就没有「控制台窗口」这个概念 —— 从文件管理器
-双击也不会像 Windows 那样弹黑框。因此这里直接 `return False`。
+（Linux 上 PyInstaller 的 `console=False` 干脆被忽略：源码
+`building/api.py` 的 `_bootloader_file()` 只在 `is_win or is_darwin`
+时才切到 `runw` 版 bootloader，Linux 用的始终是 `run` 版。
+macOS 上 `console=False` 生效，但 macOS 版 bootloader 没有把 stdout
+重定向到 /dev/null，worker 协议照样通。详见
+`packaging/audio_separation.spec` 里 `console=False` 的注释。）
 
 ## ★worker / --version / --probe 三个模式绝不能调这里
 

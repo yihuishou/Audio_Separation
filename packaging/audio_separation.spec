@@ -315,14 +315,25 @@ exe = EXE(
     #   剩下的边角由 src/audio_separation/core/console_hider.py 兜底
     #   （GUI 分支里再调一次 FreeConsole）。
     #
-    # ★ Linux 上这个参数是**无效的**，不是没配对：
-    #   PyInstaller 官方文档对 `--windowed` 的原文是
-    #   「This option is ignored on *NIX systems.」
+    # ★ Linux 上这个参数**完全无效**，不是没配对 —— 结论来自 PyInstaller
+    #   源码 `building/api.py` 的 `_bootloader_file()`：
+    #
+    #       if is_win or is_darwin:
+    #           if not self.console:
+    #               exe = exe + 'w'
+    #
+    #   只有 Windows / macOS 才会切到 `runw`（windowed）版 bootloader；
+    #   Linux 无论 console 传什么，用的都是同一个 `run`（console）版。
     #   所以 Linux 产物就是普通控制台程序 —— stdout 照常工作
     #   （worker 协议天然可用，不依赖 Windows 那套管道技巧），
     #   从文件管理器双击也不会像 Windows 那样弹黑框
     #   （Linux 本来就没有「控制台窗口」这个概念）。
-    #   同一个值通吃两个平台，无需分平台判断。
+    #   ⇒ 同一个值通吃三个平台，无需分平台判断。
+    #
+    # ★ macOS 上这个参数**是生效的**（is_darwin 命中上面那个分支），
+    #   但对本项目无害：macOS 版 bootloader 里没有把 stdout 重定向到
+    #   /dev/null 的代码，stdout 仍继承自父进程，worker 协议照样通。
+    #   唯一差别是产物会变成后台应用（TransformProcessType）。
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,

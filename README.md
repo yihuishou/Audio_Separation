@@ -232,6 +232,11 @@ GUI 模式会在 **exe 同级目录的 `logs/`** 下写日志,文件名 `app-<�
 
 ### Linux 注意事项
 
+- Linux 与 macOS 都没有「控制台窗口」这回事,双击不会弹黑框。
+  打包参数 `console=False` 在 Linux 上会被 PyInstaller 直接忽略
+  (源码 `building/api.py` 只在 `is_win or is_darwin` 时才切 windowed
+  版 bootloader),产物就是普通控制台程序 —— stdout 照常工作,
+  worker 的 JSON Lines 协议天然可用。
 - `models/` `ffmpeg/` 的可执行权限位可能丢失(PyInstaller 官方 issue #3926
   承认不保留文件属性),运行时会自动 `chmod` 兜底,也可手动 `chmod +x`。
 - `ffmpeg/` 必须是 **Linux 版**二进制(文件名无 `.exe` 后缀),Windows 版跑不了。
