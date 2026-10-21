@@ -305,9 +305,16 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    # ★ 必须 True：worker 模式靠 stdout 吐 JSON Lines 协议，
-    # windowed（console=False）下 stdout 无效，GUI 会收不到任何事件。
-    console=True,
+    # ★ 必须 False（GUI 子系统）：双击 exe 不弹黑色控制台窗口。
+    #
+    #   实测（PyInstaller 6.22.3，Windows，onedir）：console=False 时，
+    #   父进程用 stdout=PIPE 拉起的子进程，其 stdout 仍然是可用的管道
+    #   —— worker 的 JSON Lines 协议收发完全正常。所以 GUI 模式无窗口
+    #   与 worker 模式有管道并不矛盾。
+    #
+    #   剩下的边角由 src/audio_separation/core/console_hider.py 兜底
+    #   （GUI 分支里再调一次 FreeConsole）。
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

@@ -236,6 +236,17 @@ def self_executable() -> Path:
     return Path(sys.executable)
 
 
+def logs_dir() -> Path:
+    """日志目录：exe 同级目录下的 `logs`。
+
+    冻结态取 exe 所在目录 —— 用户把 exe 放哪，日志就跟着放哪，
+    不用去猜安装路径。开发态取仓库根。
+    """
+    if getattr(sys, "frozen", False):
+        return self_executable().resolve().parent / "logs"
+    return repo_root() / "logs"
+
+
 def bs_roformer_revive_dir() -> Path:
     """BS-RoFormer-Revive 模型目录（`models/bs_roformer_revive/`）。"""
     return models_dir() / "bs_roformer_revive"

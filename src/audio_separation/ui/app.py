@@ -84,6 +84,22 @@ def main(argv: list[str] | None = None) -> int:
     from PySide6.QtWidgets import QApplication
     from .main_window import MainWindow
 
+    # ── GUI 模式：接管控制台并隐藏窗口 ────────────────────────────────
+    # ★顺序不能反：先装日志（把 stdout/stderr 换成 tee，流进文件），
+    #   再隐藏控制台。反过来的话隐藏之后 print() 会写到失效的句柄上。
+    #
+    # ★worker / --version / --probe 三个分支都不走这里 —— 它们的
+    #   stdout 是协议通道或命令行输出，隐藏了会出事。
+    from ..core.logging_setup import detach_console_output, setup_console_logging
+    from ..core.console_hider import hide_console
+
+    log_path = setup_console_logging()
+    if hide_console():
+        # 控制台没了，只保留写日志文件那一路
+        detach_console_output()
+    if log_path is not None:
+        print(f"日志文件：{log_path}")
+
     app = QApplication(sys.argv)
     app.setApplicationName("Audio Separation")
     app.setApplicationVersion(__version__)

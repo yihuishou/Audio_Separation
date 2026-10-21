@@ -140,7 +140,7 @@ class MainWindow(QMainWindow):
             dtype=params.get("dtype") or "float32",
             parent=self,
         )
-        worker.log_line.connect(self.batch_panel.append_log)
+        worker.log_line.connect(self._append_log)
         worker.progress_updated.connect(self._on_progress)
         worker.file_finished.connect(self._on_file_finished)
         worker.fatal_error.connect(self._on_fatal)
@@ -150,6 +150,20 @@ class MainWindow(QMainWindow):
 
         self._worker = worker
         worker.start()
+
+    def _append_log(self, message: str) -> None:
+        """写一行日志：日志面板 + 日志文件。
+
+        面板和文件记的是同一份 —— 用户截图面板给别人的时候，
+        文件里的内容能对上。
+        """
+        self.batch_panel.append_log(message)
+        try:
+            from ..core.logging_setup import log_line
+
+            log_line(message)
+        except Exception:
+            pass
 
     def _on_cancel_requested(self) -> None:
         """取消处理。"""
@@ -169,9 +183,9 @@ class MainWindow(QMainWindow):
     def _on_file_finished(self, name: str, ok: bool, out_dir: str) -> None:
         """单个文件完成。"""
         if ok:
-            self.batch_panel.append_log(f"[完成] {name} → {out_dir}")
+            self._append_log(f"[完成] {name} → {out_dir}")
         else:
-            self.batch_panel.append_log(f"[失败] {name}")
+            self._append_log(f"[失败] {name}")
 
     def _on_fatal(self, message: str) -> None:
         """致命错误。"""
@@ -182,7 +196,7 @@ class MainWindow(QMainWindow):
     def _on_cancelled(self, reason: str) -> None:
         """任务被取消。"""
         self._outcome = "cancelled"
-        self.batch_panel.append_log(f"[取消] {reason}")
+        self._append_log(f"[取消] {reason}")
         self.status_label.setText("已取消")
 
     def _on_batch_finished(self, summary: dict) -> None:
@@ -194,7 +208,7 @@ class MainWindow(QMainWindow):
         if cancelled:
             self._outcome = "cancelled"
         if self._outcome != "failed":
-            self.batch_panel.append_log(
+            self._append_log(
                 f"汇总：共 {total} 个，成功 {ok}，失败 {failed}，取消 {cancelled}"
             )
         if self._outcome == "ok":
