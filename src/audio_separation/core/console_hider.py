@@ -6,7 +6,7 @@
 打包产物在 Windows 上双击会弹一个黑色控制台窗口，占地方、也吓人。
 用户要的是「启动后不显示额外的控制台」。
 
-## ★为什么不能用 PyInstaller 的 `console=False`
+## ★为什么不能光靠 PyInstaller 的 `console=False`
 
 `console=False` 的 exe 是 **GUI 子系统**程序。Windows 上 GUI 子系统程序
 默认**不分配控制台**，`sys.stdout` 拿不到控制台句柄。
@@ -22,6 +22,17 @@
 
 也就是说 **`console=False` 是安全的**。本模块做的是双保险：
 在 GUI 分支里额外调 `FreeConsole()`，把「万一还有残留控制台」的情况也清掉。
+
+## ★Linux / macOS 上这个模块是空操作
+
+PyInstaller 官方文档对 `--windowed` 的原文：
+
+    This option is ignored on *NIX systems.
+
+所以 Linux 产物本来就是普通控制台程序，stdout 照常工作
+（worker 协议天然可用，不依赖 Windows 那套管道技巧），
+而且 Linux 本来就没有「控制台窗口」这个概念 —— 从文件管理器
+双击也不会像 Windows 那样弹黑框。因此这里直接 `return False`。
 
 ## ★worker / --version / --probe 三个模式绝不能调这里
 

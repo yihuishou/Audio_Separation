@@ -21,6 +21,15 @@ GUI 模式要把控制台窗口藏起来（见 `console_hider.py`），但程序
 （`paths.repo_root()`）—— 开发时不该往 Python 安装目录里写东西，
 那里通常没有写权限。
 
+## ★GUI 模式下 `print()` 本来是被丢掉的
+
+打包用 `console=False`（GUI 子系统），这种程序**不分配控制台**，
+`sys.stdout` 是 `None`。而 `print()` 遇到 `None` 的 stdout 是**静默 no-op**
+—— 也就是说 GUI 模式里所有 `print()` 原本都凭空消失，什么都留不下。
+
+装上 tee 之后 stdout 变成真实对象，print 的内容这才终于能落进日志文件。
+所以这个模块不只是"锦上添花"，它是 GUI 模式下唯一的输出出口。
+
 ## ★worker 模式绝不能调用这里
 
 worker 的 stdout 是 JSON Lines 协议通道（`core/protocol.py`），

@@ -314,6 +314,15 @@ exe = EXE(
     #
     #   剩下的边角由 src/audio_separation/core/console_hider.py 兜底
     #   （GUI 分支里再调一次 FreeConsole）。
+    #
+    # ★ Linux 上这个参数是**无效的**，不是没配对：
+    #   PyInstaller 官方文档对 `--windowed` 的原文是
+    #   「This option is ignored on *NIX systems.」
+    #   所以 Linux 产物就是普通控制台程序 —— stdout 照常工作
+    #   （worker 协议天然可用，不依赖 Windows 那套管道技巧），
+    #   从文件管理器双击也不会像 Windows 那样弹黑框
+    #   （Linux 本来就没有「控制台窗口」这个概念）。
+    #   同一个值通吃两个平台，无需分平台判断。
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
