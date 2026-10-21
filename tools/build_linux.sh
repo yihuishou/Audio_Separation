@@ -10,6 +10,7 @@
 # 用法：
 #   bash tools/build_linux.sh
 #   bash tools/build_linux.sh --zip
+#   bash tools/build_linux.sh --version 1.2.3 --zip
 
 set -euo pipefail
 
@@ -17,16 +18,22 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
 MAKE_ZIP=0
-for arg in "$@"; do
-    case "$arg" in
-        --zip) MAKE_ZIP=1 ;;
-        *) echo "未知参数: $arg" >&2; exit 2 ;;
+VERSION=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --zip) MAKE_ZIP=1; shift ;;
+        --version)
+            [ $# -ge 2 ] || { echo "--version 后面要跟版本号" >&2; exit 2; }
+            VERSION="$2"; shift 2 ;;
+        --version=*)
+            VERSION="${1#--version=}"; shift ;;
+        *) echo "未知参数: $1" >&2; exit 2 ;;
     esac
 done
 
 PYTHON="${PYTHON:-python3}"
 
-echo "[1/4] 使用 Python: $($PYTHON --version 2>&1)"
+echo "[1/5] 使用 Python: $($PYTHON --version 2>&1)"
 
 if ! "$PYTHON" -c "import PyInstaller" 2>/dev/null; then
     echo "     PyInstaller 未安装，正在安装..." >&2
@@ -34,10 +41,18 @@ if ! "$PYTHON" -c "import PyInstaller" 2>/dev/null; then
 fi
 "$PYTHON" -m PyInstaller --version | sed 's/^/     /' >&2
 
-echo "[2/4] 清理旧的 build/ 与 dist/"
+if [ -n "$VERSION" ]; then
+    echo "[2/5] 写入版本号: $VERSION"
+    "$PYTHON" tools/set_version.py "$VERSION"
+else
+    echo "[2/5] 沿用源码里的版本号（未指定 --version）"
+    "$PYTHON" tools/set_version.py --show
+fi
+
+echo "[3/5] 清理旧的 build/ 与 dist/"
 rm -rf build dist
 
-echo "[3/4] 运行 PyInstaller（首次约需 3-10 分钟）..."
+echo "[4/5] 运行 PyInstaller（首次约需 3-10 分钟）..."
 "$PYTHON" -m PyInstaller packaging/audio_separation.spec --noconfirm --clean
 
 APP_DIR="$REPO/dist/audio_separation"
@@ -58,7 +73,7 @@ fi
 
 SIZE_MB=$(du -sm "$APP_DIR" | cut -f1)
 
-echo "[4/4] 构建完成"
+echo "[5/5] 构建完成"
 echo "     产物: $APP_DIR/audio_separation"
 echo "     体积: ${SIZE_MB} MB"
 
@@ -87,6 +102,12 @@ EOF
 if [ "$MAKE_ZIP" = "1" ]; then
     echo
     echo "     正在打包 zip（不含 models/ffmpeg）..."
-    (cd dist && zip -qr audio_separation-program-only.zip audio_separation)
-    echo "     已生成: dist/audio_separation-program-only.zip"
+    # ★ 用 tools/make_archive.py 而不是 zip 命令：Windows 上没有 zip 命令，
+    #   且两边 zip 内部结构要一致（统一带顶层 audio_separation/ 目录）。
+    #   它还负责保留可执行位（zipfile 默认会丢掉 Unix 权限位）。
+    if [ -n "$VERSION" ]; then
+        "$PYTHON" tools/make_archive.py --app-dir dist/audio_separation --version "$VERSION"
+    else
+        "$PYTHON" tools/make_archive.py --app-dir dist/audio_separation
+    fi
 fi

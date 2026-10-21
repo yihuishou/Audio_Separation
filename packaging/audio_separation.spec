@@ -40,6 +40,7 @@ site-packages 加回 ``sys.path``（**追加到末尾**，bundle 内模块优先
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 
@@ -222,7 +223,38 @@ PROJECT_HIDDEN = [
     "tqdm",
 ]
 
-HIDDEN = sorted(set(STDLIB_HIDDEN) | set(SUBMODULE_HIDDEN) | set(PROJECT_HIDDEN))
+# ── 隐藏导入按平台过滤 ──────────────────────────────────────────────
+# ★ STDLIB_HIDDEN 是一份跨平台通用的清单，里面混了 Windows-only
+#   （winreg / msvcrt / _winapi）和 POSIX-only（posix / fcntl / resource）
+#   的模块。缺哪一个都会让 PyInstaller 打一条
+#       ERROR: Hidden import 'xxx' not found
+#   ——**非致命**（analysis.py:774 打完就 continue，构建照常成功），
+#   但 CI 日志里全是 ERROR 会掩盖真正的错误。
+#
+#   实测（Windows）：'readline' 报 not found，'winreg'/'msvcrt'/'_winapi'/
+#   'posix'/'fcntl'/'resource' 却不报 —— 因为 PyInstaller 内部
+#   modulegraph 对跨平台模块有专门的占位处理，行为并不直观。
+#   所以这里不猜，**实测当前平台到底能不能 import**。
+#
+# ★ 为什么这不会漏装：PyInstaller 不能跨平台编译，**构建平台 == 目标平台**。
+#   当前平台 import 不到的模块，运行时同样 import 不到，留着也没用。
+def _available_on_this_platform(name: str) -> bool:
+    """当前平台能否真正 import 这个标准库模块。"""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        # find_spec 对某些半初始化模块会抛 ValueError —— 当作不可用
+        return False
+
+
+STDLIB_AVAILABLE = [m for m in STDLIB_HIDDEN if _available_on_this_platform(m)]
+
+_dropped = sorted(set(STDLIB_HIDDEN) - set(STDLIB_AVAILABLE))
+if _dropped:
+    print(f"[spec] 平台过滤：丢弃 {len(_dropped)} 个本平台不可用的标准库模块")
+    print(f"[spec]         {_dropped}")
+
+HIDDEN = sorted(set(STDLIB_AVAILABLE) | set(SUBMODULE_HIDDEN) | set(PROJECT_HIDDEN))
 
 # ── GPU 运行库 DLL：excludes 只管 Python 模块，管不到 DLL ────────────
 # 保险起见再按文件名剔一遍。留着它们不仅白占 300MB，

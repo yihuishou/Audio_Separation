@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     构建 Windows 可执行程序（PLAN §2.13 / M7）。
 
@@ -12,11 +12,14 @@
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tools\build_windows.ps1
     powershell -ExecutionPolicy Bypass -File tools\build_windows.ps1 -Zip
+    powershell -ExecutionPolicy Bypass -File tools\build_windows.ps1 -Version 1.2.3 -Zip
 #>
 [CmdletBinding()]
 param(
     # 构建完顺手打个 zip（只含程序，不含 models/ffmpeg）
-    [switch]$Zip
+    [switch]$Zip,
+    # 版本号：写进源码后编译。CI 按 tag 版本编译时用这个。
+    [string]$Version
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,7 +32,7 @@ try {
     if (-not $python) {
         throw "找不到 python，请先安装 Python 3.11+ 并加入 PATH"
     }
-    Write-Host "[1/4] 使用 Python: $($python.Source)" -ForegroundColor Cyan
+    Write-Host "[1/5] 使用 Python: $($python.Source)" -ForegroundColor Cyan
 
     & $python.Source -c "import PyInstaller" 2>$null
     if ($LASTEXITCODE -ne 0) {
@@ -40,12 +43,22 @@ try {
     $pyiVer = & $python.Source -m PyInstaller --version
     Write-Host "     $pyiVer" -ForegroundColor DarkGray
 
-    Write-Host "[2/4] 清理旧的 build\ 与 dist\" -ForegroundColor Cyan
+    if ($Version) {
+        Write-Host "[2/5] 写入版本号: $Version" -ForegroundColor Cyan
+        & $python.Source tools\set_version.py $Version
+        if ($LASTEXITCODE -ne 0) { throw "版本号写入失败" }
+    } else {
+        Write-Host "[2/5] 沿用源码里的版本号（未指定 -Version）" -ForegroundColor Cyan
+        & $python.Source tools\set_version.py --show
+        if ($LASTEXITCODE -ne 0) { throw "读取版本号失败" }
+    }
+
+    Write-Host "[3/5] 清理旧的 build\ 与 dist\" -ForegroundColor Cyan
     foreach ($dir in @("build", "dist")) {
         if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
     }
 
-    Write-Host "[3/4] 运行 PyInstaller（首次约需 3-10 分钟）..." -ForegroundColor Cyan
+    Write-Host "[4/5] 运行 PyInstaller（首次约需 3-10 分钟）..." -ForegroundColor Cyan
     & $python.Source -m PyInstaller packaging\audio_separation.spec --noconfirm --clean
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller 构建失败" }
 
@@ -54,7 +67,7 @@ try {
     if (-not (Test-Path $exe)) { throw "构建结束但没找到产物：$exe" }
 
     $sizeMB = [math]::Round(((Get-ChildItem $appDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), 1)
-    Write-Host "[4/4] 构建完成" -ForegroundColor Green
+    Write-Host "[5/5] 构建完成" -ForegroundColor Green
     Write-Host "     产物: $exe" -ForegroundColor Green
     Write-Host "     体积: $sizeMB MB" -ForegroundColor Green
 
@@ -70,12 +83,16 @@ try {
     Write-Host "    pip 会从 PyPI 拉默认的 CUDA 构建，在 AMD 机器上装出用不了的 torch。" -ForegroundColor Yellow
 
     if ($Zip) {
-        $zip = Join-Path $repo "dist\audio_separation-program-only.zip"
         Write-Host ""
         Write-Host "     正在打包 zip（不含 models/ffmpeg）..." -ForegroundColor Cyan
-        if (Test-Path $zip) { Remove-Item -Force $zip }
-        Compress-Archive -Path (Join-Path $appDir "*") -DestinationPath $zip -Force
-        Write-Host "     已生成: $zip" -ForegroundColor Green
+        # ★ 用 tools\make_archive.py 而不是 Compress-Archive：
+        #   Compress-Archive 打出来的 zip 里是散文件（没有顶层目录），
+        #   而 Linux 侧是带顶层目录的 —— 同一个 tag 的两个包结构不一致。
+        #   make_archive.py 两个平台行为一致，zip 内统一是 audio_separation/。
+        $zipArgs = @("--app-dir", "dist\audio_separation")
+        if ($Version) { $zipArgs += @("--version", $Version) }
+        & $python.Source tools\make_archive.py @zipArgs
+        if ($LASTEXITCODE -ne 0) { throw "打包 zip 失败" }
     }
 }
 finally {

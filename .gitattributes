@@ -1,0 +1,21 @@
+# ★ shell 脚本在 Linux 上必须是 LF：CRLF 会让 bash 把每行末尾的 \r
+#   当成命令的一部分，直接报 "$'\r': command not found"，CI 整条挂掉。
+*.sh text eol=lf
+
+# ★ PowerShell 脚本用 CRLF（Windows 原生），编码必须是 UTF-8。
+#   文件头要有 BOM：没有 BOM 时 Windows PowerShell 5.1 会按系统 ANSI
+#   码页（中文机器是 GBK）读文件，中文字符串会被读坏导致解析失败。
+*.ps1 text eol=crlf
+
+*.py text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+
+# ★ 这两个文件会被 tools/set_version.py 改写（CI 注入版本号），
+#   脚本统一写 LF，所以这里也固定成 LF —— 否则每次 checkout 变 CRLF、
+#   每次跑脚本又变回 LF，工作区反复横跳。
+*.toml text eol=lf
+*.spec text eol=lf
+
+# .gitattributes 自己也固定成 LF
+.gitattributes text eol=lf

@@ -1,0 +1,233 @@
+name: Release
+
+# ★ 只有打 tag 才构建。tag 就是版本号的唯一来源：
+#   v1.2.3  →  版本 1.2.3
+#   1.2.3   →  版本 1.2.3
+# 其它形式的 tag（如 nightly、latest）不触发，避免把非发布版本发出去。
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------
+  # 1) 冒烟测试：确认源码在无 torch 环境下没坏
+  # ---------------------------------------------------------------
+  test:
+    name: 冒烟测试 (torch-free)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装 Qt 运行库
+        run: |
+          # ★ PySide6 的 wheel 只带 Qt 自己，libGL / libEGL 这些是系统的。
+          #   缺了它们，QApplication 初始化时找不到平台插件直接 abort
+          #   （"Could not load the Qt platform plugin"），测试进程整个挂掉。
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1 \
+            fonts-dejavu-core
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          # ★ 不装 torch：ROCm 的 wheel 不在 PyPI，且 torch 装进来只会让
+          #   测试去真跑推理（慢且需要 GPU）。这里只跑不依赖 torch 的那批。
+          python -m pip install pytest pytest-timeout numpy PyYAML tqdm PySide6
+
+      - name: 跑测试
+        env:
+          PYTHONPATH: src
+          # ★ CI 没有显示服务器，Qt 会因为拿不到 xcb 平台插件而直接 abort。
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          # ★ 只跑不依赖 torch 的那批。test_batch_cancel 需要真的起 worker
+          #   子进程（要 torch），test_audio_io / test_pipeline /
+          #   test_regression_baseline / test_separator 顶层就 import torch。
+          python -m pytest -q \
+            tests/test_paths.py \
+            tests/test_config.py \
+            tests/test_presets.py \
+            tests/test_requirements.py \
+            tests/test_entry_modes.py \
+            tests/test_logging_setup.py \
+            tests/test_startup_guard.py \
+            tests/test_env_check.py \
+            tests/test_gpu_only.py \
+            tests/test_packaging.py \
+            tests/test_ui_smoke.py \
+            tests/test_worker_protocol.py
+
+  # ---------------------------------------------------------------
+  # 2) 构建：Linux + Windows 两个平台各出一个压缩包
+  # ---------------------------------------------------------------
+  build:
+    name: 构建 ${{ matrix.name }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux
+          - os: windows-latest
+            name: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装构建依赖
+        run: |
+          python -m pip install --upgrade pip
+          # ★ 只装 4 个包就够构建：PySide6 是 GUI 必需，PyYAML/tqdm 被 spec
+          #   列为 hidden import。torch/scipy/BS-RoFormer 全部走目标系统，
+          #   所以这里装它们纯属浪费 CI 时间（torch 约 800 MB）。
+          python -m pip install "pyinstaller==6.22.3" "PySide6==6.12.0" "PyYAML==6.0.3" "tqdm==4.70.1"
+
+      - name: 算出版本号
+        id: ver
+        shell: bash
+        run: |
+          # tag 形如 v1.2.3 或 1.2.3，去掉前缀 v
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG} → version=${VERSION}"
+
+      - name: 构建 (Linux)
+        if: runner.os == 'Linux'
+        env:
+          # 显式指定：build_linux.sh 默认用 python3，CI 里指向哪个解释器
+          # 别让它猜。
+          PYTHON: python
+          # ★ 版本号走环境变量而不是直接写 ${{ }}：GitHub 官方明确要求
+          #   不要把表达式直接插进 run 块，免得内容被当成 shell 代码执行。
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          chmod +x tools/build_linux.sh
+          ./tools/build_linux.sh --version "$VERSION" --zip
+
+      - name: 构建 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          # ★ Windows runner 的执行策略有可能是 RemoteSigned，
+          #   那样跑未签名的本地 .ps1 会被拦。Process 作用域的 Bypass
+          #   只影响当前进程，不需要管理员权限。
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          ./tools/build_windows.ps1 -Version "$env:VERSION" -Zip
+
+      - name: 校验产物
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          # 跑一下产物，确认它自称的版本号就是 tag 里的那个。
+          # ★ 放在 tools/verify_artifact.py 里而不是内联 Python：
+          #   Windows runner 用 PowerShell，多行内联脚本的引号转义极易出错。
+          # ★ --version 分支在 app.py 里是**先于** PySide6 导入就返回的，
+          #   所以这一步不需要显示服务器，也不需要 Qt 运行库。
+          python tools/verify_artifact.py --expect "$VERSION"
+
+      - name: 上传压缩包
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-separation-${{ matrix.name }}
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------
+  # 3) 汇总：把两个平台的压缩包挂到 GitHub Release 上
+  # ---------------------------------------------------------------
+  release:
+    name: 创建 Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载所有产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 列出产物
+        run: ls -lh artifacts/
+
+      - name: 生成 Release 说明
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # ★ 压缩包里只有程序本体。模型权重（~1.2 GB）和 ffmpeg
+          #   没进包也没进 git，用户要自己准备 —— Release 说明里必须写清楚，
+          #   否则用户下载后一头雾水。
+          #
+          # ★ 说明正文放在 packaging/release-notes-body.md，不在这里用 heredoc：
+          #   YAML 块里的 heredoc 结束符会被缩进，bash 认不出来，
+          #   脚本会一直等 EOF 卡死。
+          VERSION="${TAG#v}"
+          {
+            echo "## 音频分离工具 v${VERSION}"
+            echo
+            echo "两个平台的压缩包（只含程序本体）："
+            echo
+            echo "| 文件 | 平台 |"
+            echo "|------|------|"
+            for f in artifacts/*.zip; do
+              base="$(basename "$f")"
+              # 从文件名尾部反推平台：...-linux-x86_64.zip / ...-windows-x86_64.zip
+              case "$base" in
+                *-linux-*)   platform="Linux" ;;
+                *-windows-*) platform="Windows" ;;
+                *)           platform="未知" ;;
+              esac
+              echo "| \`${base}\` | ${platform} |"
+            done
+            echo
+            cat packaging/release-notes-body.md
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: 创建 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+          # ★ 同一个 tag 重复跑（改了工作流再跑、或手动 re-run）时，
+          #   Release 已经存在了，gh release create 会直接失败。
+          #   这时改成覆盖资产 + 更新说明，而不是让整个 job 红掉。
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release ${TAG} 已存在，改为覆盖资产"
+            gh release upload "$TAG" artifacts/*.zip --clobber
+            gh release edit "$TAG" --title "v${VERSION}" --notes-file release-notes.md
+          else
+            gh release create "$TAG" artifacts/*.zip \
+              --title "v${VERSION}" \
+              --notes-file release-notes.md \
+              --verify-tag
+          fi
