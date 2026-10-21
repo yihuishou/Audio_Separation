@@ -212,8 +212,23 @@ bash tools/build_linux.sh
 | `audio_separation --worker --job job.json` | worker 模式,stdout 吐 JSON Lines |
 | `audio_separation --probe` | 探测 GPU(不弹窗口),结果写入 `PROBE_RESULT_FILE` 指定的文件 |
 
-★ GUI 模式会带一个控制台窗口 —— 这是必需的:worker 模式靠 stdout 传协议,
-用无控制台的 GUI 程序会导致 GUI 收不到任何事件。
+★ GUI 模式**不弹控制台窗口** —— 打包时用的是 `console=False`(GUI 子系统)。
+worker 模式靠 stdout 传 JSON Lines 协议,实测父进程用 `stdout=PIPE` 拉起
+无控制台的子进程仍能完整收到协议内容,隐藏窗口不会打断通信。
+
+### 运行日志
+
+GUI 模式会在 **exe 同级目录的 `logs/`** 下写日志,文件名 `app-<日期>.log`
+(开发态则写在仓库根的 `logs/`)。记录内容包括:
+
+- 程序里所有 `print()` 的内容
+- `logging` 的输出
+- GUI 日志面板里显示的每一行(worker 的输出、完成/失败/取消提示)
+
+单个文件超过 10 MB 会轮转成 `app-<日期>.1.log`,旧文件保留 14 天。
+
+★ 隐藏控制台窗口后,出问题时用户看不到任何输出 —— 日志文件是唯一的排查线索,
+反馈问题时请一并提供 `logs/` 下的文件。
 
 ### Linux 注意事项
 
