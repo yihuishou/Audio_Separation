@@ -35,6 +35,10 @@ import time
 import zipfile
 from pathlib import Path
 
+from console_utf8 import force_utf8
+
+force_utf8()
+
 REPO = Path(__file__).resolve().parent.parent
 
 #: 压缩包里顶层目录的名字（与 PyInstaller 的 COLLECT name 一致）

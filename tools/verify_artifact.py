@@ -14,6 +14,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from console_utf8 import force_utf8
+
+force_utf8()
+
 REPO = Path(__file__).resolve().parent.parent
 
 

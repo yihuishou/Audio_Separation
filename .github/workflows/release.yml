@@ -17,6 +17,13 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # ★ Windows runner 的控制台代码页是 cp1252，Python 的标准输出编码跟着
+  #   它走，打印中文直接抛 UnicodeEncodeError，脚本跑完了也返回非 0。
+  #   开启 UTF-8 模式（PEP 540）让所有 Python 调用都用 UTF-8。
+  #   tools/ 里的脚本自己也做了兜底，不依赖这个变量。
+  PYTHONUTF8: "1"
+
 jobs:
   # ---------------------------------------------------------------
   # 1) 构建：Linux + Windows 两个平台各出一个压缩包

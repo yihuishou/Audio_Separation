@@ -26,6 +26,10 @@ import re
 import sys
 from pathlib import Path
 
+from console_utf8 import force_utf8
+
+force_utf8()
+
 REPO = Path(__file__).resolve().parent.parent
 
 #: 版本号格式：数字.数字.数字，可带 -rc.1 / +build.5 这样的后缀
